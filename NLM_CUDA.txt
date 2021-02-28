@@ -1,0 +1,321 @@
+%%cu
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <time.h>
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include <curand_kernel.h>
+
+#define patch_w 3
+#define patch_h 3
+
+
+//Function that takes the input of a .txt file
+int getArray(int height,int width,float* unfiltered_img)
+{
+    FILE *fptr;
+
+    fptr = fopen("Train.txt","r");
+
+    if (fptr == NULL) {
+        perror("Failed: ");
+        return -1;
+    }
+
+    for(int i=0; i<height; i++)
+        for(int j=0; j<width; j++){
+            fscanf(fptr,"%f",&unfiltered_img[i*width + j]);
+        }
+
+    fclose(fptr);
+
+    return 0;
+    }
+
+
+//Function that prints array
+void printarray(int height,int width,float* printarr)
+
+{
+    for(int i=0; i<height; i++)
+        for(int j=0; j<width; j++)
+            printf("printarr[%d][%d]=%f \n",i,j,printarr[i*width +j]);
+
+
+
+}
+
+
+//Function to create filter which will be applied on patches
+void FilterCreation(float patchsigma,int height,int width,float GKernel[patch_w][patch_h])
+{
+    // intialising standard deviation
+    float sigma = patchsigma;
+    float r, s = 2.0 * sigma * sigma;
+
+    // sum is for normalization
+    float sum = 0.0;
+
+    // generating patch size kernel
+    for (int x = -(height/2); x <= (height/2); x++) {
+        for (int y = -(width/2); y <= (width/2); y++) {
+            r = sqrt(x * x + y * y);
+            GKernel[x + (height/2)][y + (height/2)] = (exp(-(r * r) / s)) / (M_PI * s);
+            sum += GKernel[x + (width/2)][y + (width/2)];
+        }
+    }
+
+    // normalising the Kernel
+    for (int i = 0; i < height; ++i)
+        for (int j = 0; j < width; ++j)
+            GKernel[i][j] /= sum;
+}
+
+
+
+//Function that writes array to .txt file
+void F_img(int n,int m,float *Fimage)
+{
+    FILE *out;
+
+    out = fopen("Filtered_img.txt","w");
+
+
+    for(int i=0; i<n; i++)
+        for(int j=0; j<m; j++){
+            fprintf(out,"%f \t",Fimage[i*m + j]);
+            //printf("filtered_img[%d][%d]=%f \n",i,j,Fimage[i*m+j]);
+        }
+
+    fclose(out);
+
+    }
+
+
+  __global__ void weightcalc(int n, int m, int patch_size, float filtsigma, float *patch_arr, float *w, float *Image, float *Fimage)
+{
+    float sum=0,sum_2=0,sum_3=0;
+    int index=threadIdx.x + blockIdx.x*blockDim.x; 
+ 
+    //calculating the euclidean distance between patches
+ 
+    
+        for(int i=0; i<n*m; i++){
+            for(int j=0; j<patch_size; j++){
+                sum+=(patch_arr[index*patch_size+j] - patch_arr[i*patch_size+j])*(patch_arr[index*patch_size+j] - patch_arr[i*patch_size+j]);
+            }
+
+            w[i]=exp(-sum/filtsigma);
+            sum_2+= w[i];
+            sum_3+= w[i] * Image[i];
+            sum=0;
+        }
+
+        Fimage[index]=(sum_3/sum_2);
+    
+        //printf("Fimage[%d]=%f \n",index,Fimage[index]);
+
+}
+
+
+
+
+
+int main(int argc, char *argv[])
+{
+    //----Image Dimensions------
+    int n=256,m=256;
+    //--------------------------
+ 
+    int flag;
+    int cells;   // the number of cells to be added to get the extended image
+    int new_n,new_m;
+ 
+    clock_t start, end;
+    double cpu_time_used;
+
+  
+    float *Image = (float *) malloc (n*m*sizeof(float));
+
+    // --------- Cuda variables --------
+    float *devPtr_w;
+    float *devPtr_patcharr;
+    float *devPtr_fimg;
+    float *devPtr_unfimg;
+    
+    //------------------------------
+
+
+    // --------- Parameters --------
+
+    float filtsigma=0.002;
+    float patchsigma=(float)5/3;
+
+    //------------------------------
+
+    int patcharr_size;
+    int patch_size = (patch_w*patch_h);
+    patcharr_size = (n*m)* patch_size;
+    float *patch_arr = (float *) malloc (patcharr_size*sizeof(float));
+
+
+    flag=getArray(n,m,Image);
+ 
+    start = clock(); //------- Clock starts here --------
+
+    /*  
+    if(flag == 0)
+        printarray(n,m,Image);
+    */ 
+
+    cells = patch_w - 1;
+    new_n=(n + cells);
+    new_m=(m + cells);
+
+
+
+    float *Extended_img = (float *) malloc (new_n*new_m*sizeof(float));
+
+    int offset;
+    offset = cells-1;
+    printf("offset = %d \n",offset);
+
+
+    //------- EXTENDING THE IMAGE --------
+
+    for (int i=0; i<new_n; i++)
+        for(int j=0; j<new_m; j++){
+
+            if((i>=offset) & ( i<(new_n - offset) )){
+                if((j>=offset) & ( j<(new_m - offset) )){
+                    Extended_img[i*new_m + j]=Image[(i-offset)*m +(j-offset)];
+                }
+                else{
+                    Extended_img[i*new_m + j]=0;
+                }
+            }
+
+            else{
+                    Extended_img[i*new_m + j]=0;
+                }
+        }
+
+
+
+    //printarray(new_n,new_m,Extended_img);
+
+    int counter=0;
+    int counter_2=0;
+
+    //--------- Getting patches out of the array --------------
+
+    for (int i=offset; i<=n; i++)
+        for(int j=offset; j<=m; j++){
+            for(int k=(i-offset); k<=(i+offset); k++)
+                for(int n=(j-offset); n<=(j+offset); n++){
+                    patch_arr[counter+counter_2]=Extended_img[k*new_m+n];
+                    counter_2++;
+                }
+            counter = counter + patch_size;
+            counter_2=0;
+        }
+
+    printf("patch array initialized \n");
+
+    int counter_3=0;
+
+    //Printing the array of patches
+    /*    
+    for(int i=0; i<patcharr_size; i++){
+        printf("printarr[%d]=%f \t",i,patch_arr[i]);
+        counter_3++;
+        if(counter_3 == 3){
+            printf("\n");
+            counter_3 = 0;
+        }
+    }
+    */     
+
+    
+    float GKernel[patch_h][patch_w];
+ 
+    FilterCreation(patchsigma,patch_h,patch_w,GKernel); //creating the filter
+
+    //printing Gaussian Kernel
+    for (int i = 0; i < patch_h; ++i) {
+        for (int j = 0; j < patch_w; ++j)
+            printf("GKerner[%d][%d]=%f \t",i,j,GKernel[i][j]);
+        printf("\n");
+    }
+ 
+
+    //applying gaussian kernel on patches
+    for(int i=0; i<n*m; i++)
+        for(int j=0; j<patch_h; j++)
+            for(int k=0; k<patch_w; k++)
+                patch_arr[(i*patch_size)+(j*patch_w)+k]*=GKernel[j][k];
+
+    printf("gaussian kernel applied on patches. \n");
+    
+ 
+    //Printing the patches array after applying gaussian kernel
+    /*  
+    for(int i=0; i<patcharr_size; i++){
+        printf("printarr[%d]=%f \t",i,patch_arr[i]);
+        counter_3++;
+        if(counter_3 == 3){
+            printf("\n");
+            counter_3 = 0;
+        }
+    }
+    */  
+ 
+
+
+
+ 
+    //creating the filtered image
+    float *Fimage = (float *) malloc ((n*m)*sizeof(float));
+
+    cudaMalloc((void**)&devPtr_patcharr, patcharr_size*sizeof(float));
+    cudaMalloc((void**)&devPtr_w, (n*m)*sizeof(float));
+    cudaMalloc((void**)&devPtr_fimg, (n*m)*sizeof(float));
+    cudaMalloc((void**)&devPtr_unfimg, (n*m)*sizeof(float));
+                    
+    //copy patch_arr(CPU) to devPtr_p(Gpu)              
+    cudaMemcpy(devPtr_patcharr, patch_arr, patcharr_size*sizeof(float), cudaMemcpyHostToDevice);
+
+    //cudaMemcpy(w, devPtr_w, (n*m)*sizeof(float), cudaMemcpyDeviceToHost);
+
+    cudaMemcpy(devPtr_unfimg, Image, (n*m)*sizeof(float), cudaMemcpyHostToDevice);
+ 
+    //calling kernel to calculate pixels of the filtered image (GPU kernel)
+    weightcalc <<<n,m>>>(n, m, patch_size, filtsigma, devPtr_patcharr, devPtr_w, devPtr_unfimg, devPtr_fimg);
+
+ 
+    cudaMemcpy(Fimage, devPtr_fimg, (n*m)*sizeof(float), cudaMemcpyDeviceToHost);
+ 
+ 
+    end = clock();    //------- Clock ends here --------
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+ 
+ 
+    //calling functin F_img to write the array to .txt file
+    F_img(n,m,Fimage);
+ 
+    printf("Execution time: %f seconds. \n",cpu_time_used);
+
+   
+    cudaFree(devPtr_w);
+    cudaFree(devPtr_patcharr);
+    cudaFree(devPtr_fimg);
+    cudaFree(devPtr_unfimg);
+    free(patch_arr);
+    free(Image);
+    free(Extended_img);
+    free(Fimage);
+ 
+ 
+    return 0;
+}
