@@ -1,0 +1,19 @@
+%IMAGE VISUALISATION
+textImage = fopen('Original_image.txt','r');
+sizeImage = [128 128];
+img1 = fscanf(textImage,'%f',sizeImage);
+imagesc(img1'); axis image;
+colormap gray;
+
+
+
+%IMAGE VISUALISATION
+textImage = fopen('Filtered_image.txt','r');
+sizeImage = [128 128];
+img2 = fscanf(textImage,'%f',sizeImage);
+imagesc(img2'); axis image;
+colormap gray;
+
+figure('Name', 'Residual');
+imagesc(img1-img2); axis image;
+colormap gray;

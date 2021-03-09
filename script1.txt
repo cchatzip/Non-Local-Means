@@ -1,0 +1,8 @@
+I = imread('File_Name.jpg');
+image=mat2gray(I);
+imshow(image);
+FID = fopen('File_Name.txt', 'w');
+if FID == -1, error('Cannot create file.'); end
+fprintf(FID, '%f \n', image);
+fclose(FID);
+
